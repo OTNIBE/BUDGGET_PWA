@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Budget</title>
+  <link rel="manifest" href="manifest.json" />
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #10b981;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+
+    header {
+      background: var(--surface);
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .balance-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .balance-amount { font-size: 1.85rem; font-weight: 700; color: var(--accent); margin-top: 2px; }
+    .balance-amount.negative { color: var(--danger); }
+    .start-pill {
+      display: inline-block;
+      margin-top: 6px;
+      font-size: 0.8rem;
+      color: var(--muted);
+      background: rgba(255,255,255,0.06);
+      padding: 4px 10px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    .header-actions { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .sync-dot { font-size: 0.7rem; color: var(--muted); }
+
+    main { flex: 1; overflow-y: auto; padding: 12px 16px; }
+    .empty { text-align: center; color: var(--muted); margin-top: 40px; font-size: 0.95rem; }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 4px;
+      border-bottom: 1px solid var(--border);
+    }
+    .row-left { display: flex; flex-direction: column; gap: 2px; }
+    .row-item { font-size: 1rem; font-weight: 500; }
+    .row-date { font-size: 0.75rem; color: var(--muted); }
+    .row-right { display: flex; align-items: center; gap: 12px; }
+    .row-amt { font-weight: 600; font-variant-numeric: tabular-nums; }
+    .del-btn {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 1.2rem;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+
+    footer {
+      background: var(--surface);
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+    }
+    input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 12px;
+      border-radius: 10px;
+      font-size: 1rem;
+      outline: none;
+    }
+    input:focus { border-color: var(--accent); }
+    #itemInput { flex: 2; min-width: 0; }
+    #amtInput { flex: 1; min-width: 0; }
+    #addBtn {
+      background: var(--accent);
+      color: #064e3b;
+      font-weight: 700;
+      border: none;
+      padding: 0 18px;
+      border-radius: 10px;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div>
+      <div class="balance-label">Remaining</div>
+      <div id="remainingEl" class="balance-amount">R 0.00</div>
+      <div id="startPill" class="start-pill" onclick="editStartBudget()">Start: R 0.00 ✎</div>
+    </div>
+    <div class="header-actions">
+      <button class="btn-ghost" onclick="archiveMonth()">Archive</button>
+      <span id="syncStatus" class="sync-dot">Ready</span>
+    </div>
+  </header>
+
+  <main id="listEl"></main>
+
+  <footer>
+    <input id="itemInput" type="text" placeholder="Expense..." autocomplete="off" />
+    <input id="amtInput" type="number" inputmode="decimal" step="0.01" placeholder="0.00" />
+    <button id="addBtn" onclick="addExpense()">Add</button>
+  </footer>
+
+  <script>
+    const STORAGE_KEY = "simple_budget_state_v1";
+    const CONFIG_KEY = "simple_budget_config_v1";
+
+    let config = JSON.parse(localStorage.getItem(CONFIG_KEY) || "null");
+    let state = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{"startBudget":10000,"items":[],"queue":[]}');
+
+    function ensureConfig() {
+      if (!config || !config.url || !config.token) {
+        const url = prompt("Paste your Google Apps Script Web App URL:");
+        const token = prompt("Enter your SECRET_TOKEN:");
+        if (url && token) {
+          config = { url: url.trim(), token: token.trim() };
+          localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+        }
+      }
+    }
+
+    function formatZAR(num) {
+      return "R " + Number(num || 0).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function todayISO() {
+      const d = new Date();
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    }
+
+    function saveLocal() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      render();
+    }
+
+    function render() {
+      const spent = state.items.reduce((sum, x) => sum + Number(x.amount || 0), 0);
+      const remaining = state.startBudget - spent;
+
+      const remEl = document.getElementById("remainingEl");
+      remEl.textContent = formatZAR(remaining);
+      remEl.classList.toggle("negative", remaining < 0);
+
+      document.getElementById("startPill").textContent = `Start: ${formatZAR(state.startBudget)} ✎`;
+
+      const listEl = document.getElementById("listEl");
+      if (!state.items.length) {
+        listEl.innerHTML = `<div class="empty">No expenses logged yet.</div>`;
+        return;
+      }
+
+      // Render newest first
+      listEl.innerHTML = [...state.items].reverse().map((entry, revIdx) => {
+        const actualIdx = state.items.length - 1 - revIdx;
+        return `
+          <div class="row">
+            <div class="row-left">
+              <span class="row-item">${escapeHtml(entry.item)}</span>
+              <span class="row-date">${entry.date}</span>
+            </div>
+            <div class="row-right">
+              <span class="row-amt">- ${formatZAR(entry.amount)}</span>
+              <button class="del-btn" onclick="deleteExpense(${actualIdx})" title="Delete">×</button>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+    }
+
+    function addExpense() {
+      const itemEl = document.getElementById("itemInput");
+      const amtEl = document.getElementById("amtInput");
+      const item = itemEl.value.trim();
+      const amount = parseFloat(amtEl.value);
+
+      if (!item || isNaN(amount) || amount <= 0) return;
+
+      const entry = { date: todayISO(), item, amount };
+      state.items.push(entry);
+      state.queue.push({ action: "add", ...entry });
+      saveLocal();
+
+      itemEl.value = "";
+      amtEl.value = "";
+      itemEl.focus();
+      flushQueue();
+    }
+
+    function deleteExpense(idx) {
+      const entry = state.items[idx];
+      if (!confirm(`Delete "${entry.item}" (${formatZAR(entry.amount)})?`)) return;
+      state.items.splice(idx, 1);
+      state.queue.push({ action: "delete", ...entry });
+      saveLocal();
+      flushQueue();
+    }
+
+    function editStartBudget() {
+      const val = prompt("Set new starting budget (R):", state.startBudget);
+      if (val === null) return;
+      const num = parseFloat(val);
+      if (isNaN(num) || num < 0) return;
+      state.startBudget = num;
+      state.queue.push({ action: "set_budget", amount: num });
+      saveLocal();
+      flushQueue();
+    }
+
+    function archiveMonth() {
+      if (!confirm("Move all current expenses to the Archive tab and clear this list?")) return;
+      const nextBudgetStr = prompt("Starting budget for the new period (leave blank to keep current):", state.startBudget);
+      if (nextBudgetStr === null) return;
+
+      const newBudget = nextBudgetStr.trim() === "" ? state.startBudget : parseFloat(nextBudgetStr);
+      if (isNaN(newBudget)) return;
+
+      state.items = [];
+      state.startBudget = newBudget;
+      state.queue.push({ action: "archive", newBudget });
+      saveLocal();
+      flushQueue();
+    }
+
+    async function flushQueue() {
+      if (!config || !navigator.onLine) {
+        setStatus(state.queue.length ? `Offline (${state.queue.length} queued)` : "Offline");
+        return;
+      }
+      setStatus("Syncing...");
+      try {
+        while (state.queue.length > 0) {
+          const job = state.queue[0];
+          const res = await fetch(config.url, {
+            method: "POST",
+            body: JSON.stringify({ token: config.token, ...job })
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.error || "Sync error");
+          state.queue.shift();
+          saveLocal();
+        }
+        await pullFromSheet();
+      } catch (err) {
+        setStatus("Sync paused");
+      }
+    }
+
+    async function pullFromSheet() {
+      if (!config || !navigator.onLine || state.queue.length > 0) return;
+      try {
+        const res = await fetch(`${config.url}?token=${encodeURIComponent(config.token)}`);
+        const data = await res.json();
+        if (data.ok) {
+          state.startBudget = data.startBudget;
+          state.items = data.items;
+          saveLocal();
+          setStatus("Synced");
+        }
+      } catch {
+        setStatus("Offline");
+      }
+    }
+
+    function setStatus(msg) {
+      document.getElementById("syncStatus").textContent = msg;
+    }
+
+    document.getElementById("amtInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") addExpense();
+    });
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js");
+    }
+
+    window.addEventListener("online", flushQueue);
+
+    ensureConfig();
+    render();
+    flushQueue();
+  </script>
+</body>
+</html>
